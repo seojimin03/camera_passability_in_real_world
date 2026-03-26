@@ -5,7 +5,7 @@
 # Camera Passability (Pseudo-BEV) - ROS1
 
 ## Overview
-본 레포지토리는 1:5 Scale 차량 환경에서 **카메라 기반 동적&정적 객체(사람/자전거) 인지 → 3D 역투영 → base_link BEV 좌표 변환 → 통과성(Passability) 판단 → PointCloud2 + 가상 벽 발행**을 수행합니다.
+본 레포지토리는 1:5 Scale 차량 환경에서 **카메라 기반 동적&정적 객체(사람/자전거) 인지 → 3D 역투영 → base_link BEV 좌표 변환 → 통과성(Passability) 판단 → PointCloud2 + 가상 벽 발행**을 수행합니다.\n
 또한 배송 로봇이 목적지에 도착한 후, 수령인을 안전하게 확인하고 적재함을 개방(Unlock)하는 역할을 수행합니다. 엣지 디바이스의 연산 자원을 최적화하기 위해 **상태 기반(State-based) 상태 머신**으로 작동합니다.
 
 각 로직을 **모듈 단위로 분리**하여 관리합니다.
@@ -54,8 +54,8 @@
 ```bash
 rosrun <your_pkg> dynamic_passability_detector_node_ros1.py _model_path:=yolov8n.pt _conf_thresh:=0.5
 
-
 ## 🔐 2. 비전 기반 수령인 인증 및 적재함 제어 시스템 (Vision Authentication System)
+
 
 ### ✨ 주요 기능 (Key Features)
 1. **이중 인증 시스템 (Dual Auth):** - **1차 (QR):** WeChat QR 엔진을 활용한 빠르고 왜곡 없는 수령인 암호 해독.
@@ -78,7 +78,7 @@ rosrun <your_pkg> dynamic_passability_detector_node_ros1.py _model_path:=yolov8n
 #### 📤 출력 (Publish)
 * **`/cargo_unlock`** (`std_msgs/Bool`)
   * 인증이 성공하면 `True` 신호를 1초 간격으로 3회 연속 발행합니다.
-  * **[제어팀 Action]:** 이 토픽이 `True`로 들어오면 CAN 통신이나 아두이노를 통해 적재함의 잠금장치를 해제합니다.
+  * **[제어팀 Action]:** 이 토픽이 `True`로 들어오면 CAN 통신이나 아두이노를 통해 적재함의 잠금장치를 해제해 주세요.
 
 ---
 
@@ -88,16 +88,5 @@ rosrun <your_pkg> dynamic_passability_detector_node_ros1.py _model_path:=yolov8n
 - `camera_sync.py`: Color와 Depth 이미지 시간 동기화
 - `qr_scanner.py`: OpenCV WeChat QR 기반 1차 인증
 - `gesture_recognizer.py`: YOLOv8 기반 2차 제스처 인증
-## Key Parameters
-- 기본 임계값/상수는 `camera_passability/config.py`에 정의되어 있습니다.
-- 특히:
-  - `PASS_THRESHOLD_M` : 통과성 기준 거리(현재 `0.8m`)
-  - `VIRTUAL_WALL_STEP_M` : 가상 벽 점 간격
-  - `FOV_DEG`, `MAX_RANGE_M` : base_link 전방 부채꼴 필터
 
-## Node Entrypoint (ROS1)
-- `dynamic_passability_detector_node_ros1.py`
-
-### 실행 예시
-(패키지/경로는 ROS 워크스페이스 구성에 맞춰 조정)
 
