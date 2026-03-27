@@ -53,6 +53,29 @@
  
 ## 2. 비전 기반 수령인 인증 및 적재함 제어 시스템 (Vision Authentication System)
 
+본 파이프라인은 엣지 디바이스의 연산 자원 낭비를 막기 위해 **상태 머신(State-Machine)**을 기반으로 4개의 핵심 모듈이 유기적으로 동작합니다.
+
+- Step 1. State Monitoring & Time Synchronization
+  - `campus_delivery_auth/vision_auth_node.py` (Main)
+  - `campus_delivery_auth/camera_sync.py` (Sync)
+  - `/robot_state` 토픽을 모니터링하다가 `ARRIVED` 신호가 들어올 때만 카메라 동기화 모듈을 활성화합니다.
+  - `/camera/color/image_raw/compressed` 및 `/camera/aligned_depth_to_color/image_raw/compressedDepth`를 동기화하여 수신합니다.
+
+- Step 2. 1st Authentication (WeChat QR & Depth Filter)
+  - `campus_delivery_auth/qr_scanner.py`
+  - OpenCV WeChat QR 모델을 로드하여 수령인의 QR 코드를 고속 스캔합니다.
+  - 인식된 QR 바운딩 박스의 중심 픽셀과 Depth 이미지를 매핑하여, **카메라 앞 0.5m 이내**에 있는 객체일 경우에만 유효한 인증으로 판별합니다 (보안 및 오인식 방지).
+
+- Step 3. 2nd Authentication (Gesture Backup)
+  - `campus_delivery_auth/gesture_recognizer.py`
+  - QR 스캔 실패 또는 수령인의 스마트폰 부재 시 백업으로 작동합니다.
+  - YOLOv8 기반으로 학습된 특정 수화 및 제스처(V, 따봉 등)를 추론하여, Confidence Score가 0.7 이상일 때 인증을 통과시킵니다.
+
+- Step 4. Hardware Unlock & Reset
+  - `campus_delivery_auth/vision_auth_node.py`
+  - 1차 또는 2차 인증 최종 성공 시, `/cargo_unlock` 토픽에 `True` 신호를 1초 간격으로 3회 안전하게 발행합니다.
+  - 하드웨어 개방 신호 전송이 끝나면 즉시 카메라 토픽 구독을 해제하고, 다음 목적지를 향한 `NAVIGATING` 대기 상태로 복귀하여 제어/주행 파트에 모든 컴퓨팅 자원을 반환합니다.
+    
 ### 주요 기능 (Key Features)
 1. **이중 인증 시스템 (Dual Auth):** - **1차 (QR):** WeChat QR 엔진을 활용한 빠르고 왜곡 없는 수령인 암호 해독.
    - **2차 (Gesture):** 스마트폰 부재 시, 수화 및 특정 제스처(YOLOv8)를 통한 백업 인증.
