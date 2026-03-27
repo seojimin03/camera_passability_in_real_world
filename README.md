@@ -21,6 +21,7 @@
 - `/dynamic_obstacles/passable`  
   - 타입: `std_msgs/Bool`  
   - 내용: 통과 가능 여부 (가상 벽 생성 로직과 함께 의미가 정합적)
+- 일반 실행:
 
 ## camera_passability_Pipeline Steps (Step ↔ 파일 매핑)
 - Step 1. Time Synchronization + Decode  
@@ -49,15 +50,10 @@
   - `camera_passability/obstacle_publisher.py`
   - `/dynamic_obstacles/pointcloud` + `/dynamic_obstacles/passable` 동시 발행
 
+ 
+## 2. 비전 기반 수령인 인증 및 적재함 제어 시스템 (Vision Authentication System)
 
-- 일반 실행:
-```bash
-rosrun <your_pkg> dynamic_passability_detector_node_ros1.py _model_path:=yolov8n.pt _conf_thresh:=0.5
-
-## 🔐 2. 비전 기반 수령인 인증 및 적재함 제어 시스템 (Vision Authentication System)
-
-
-### ✨ 주요 기능 (Key Features)
+### 주요 기능 (Key Features)
 1. **이중 인증 시스템 (Dual Auth):** - **1차 (QR):** WeChat QR 엔진을 활용한 빠르고 왜곡 없는 수령인 암호 해독.
    - **2차 (Gesture):** 스마트폰 부재 시, 수화 및 특정 제스처(YOLOv8)를 통한 백업 인증.
 2. **공간 필터링 (Depth Constraint):** - 혼잡한 캠퍼스 환경에서의 오인식을 막기 위해, `aligned_depth`를 활용하여 **카메라 앞 0.5m 이내**의 객체만 유효한 인증으로 판별합니다.
@@ -66,27 +62,33 @@ rosrun <your_pkg> dynamic_passability_detector_node_ros1.py _model_path:=yolov8n
 
 ---
 
-### 🤝 판단/제어팀 연동 가이드 (Interface for Control Team)
+### 판단/제어팀 연동 가이드 (Interface for Control Team)
 
 이 시스템은 제어팀의 **[로봇 상태 신호]**에 따라 켜지고, 인증이 완료되면 제어팀으로 **[개방 신호]**를 보냅니다.
 
-#### 📥 입력 (Subscribe)
+#### 입력 (Subscribe)
 * **`/robot_state`** (`std_msgs/String`)
   * 제어팀에서 로봇이 목적지에 도착하면 `"ARRIVED"`를 발행해 주세요. (이때 비전 인증 모듈이 켜집니다.)
   * 주행을 시작할 때는 `"NAVIGATING"`을 발행해 주세요. (이때 비전 모듈은 완전히 꺼집니다.)
 
-#### 📤 출력 (Publish)
+#### 출력 (Publish)
 * **`/cargo_unlock`** (`std_msgs/Bool`)
   * 인증이 성공하면 `True` 신호를 1초 간격으로 3회 연속 발행합니다.
   * **[제어팀 Action]:** 이 토픽이 `True`로 들어오면 CAN 통신이나 아두이노를 통해 적재함의 잠금장치를 해제해 주세요.
 
 ---
 
-### 📁 패키지 구조 (Package Structure)
+### 패키지 구조 (Package Structure)
 `campus_delivery_auth` 패키지는 다음과 같이 모듈화되어 있습니다.
 - `vision_auth_node.py`: 상태 머신 관리 및 제어부 통신 담당 (Main)
 - `camera_sync.py`: Color와 Depth 이미지 시간 동기화
 - `qr_scanner.py`: OpenCV WeChat QR 기반 1차 인증
 - `gesture_recognizer.py`: YOLOv8 기반 2차 제스처 인증
 
+## 실행 방법 (Usage)
 
+### 동적 통과성 판단 노드 실행 & 비전 인증 시스템 노드 실행 (Launch)
+```bash
+rosrun camera_passability_in_real_world dynamic_passability_detector_node_ros1.py _model_path:=yolov8n.pt _conf_thresh:=0.5
+
+rosrun <your_pkg> dynamic_passability_detector_node_ros1.py _model_path:=yolov8n.pt _conf_thresh:=0.5
