@@ -1,8 +1,8 @@
 # camera_passability_in_real_world
-카메라 기반 동적 장애물 인지/통과성 판단 파이프라인 모듈 패키지(ROS1) + 비전 인증 기반 적재함 개방 
+시각-공간(Semantic-Geometric) 데이터 융합 기반 엣지 경량화 통과성(Traversability) 맵핑 알고리즘 + 비전 인증 기반 적재함 개방 
 
 
-# Camera Passability (Pseudo-BEV) - ROS1
+# Camera Passability (Pseudo-BEV) -> 3/28 저녁에 수정예정
 
 ## Overview
 본 레포지토리는 1:5 Scale 차량 환경에서 **카메라 기반 동적&정적 객체(사람/자전거) 인지 → 3D 역투영 → base_link BEV 좌표 변환 → 통과성(Passability) 판단 → PointCloud2 + 가상 벽 발행**을 수행합니다.\n
