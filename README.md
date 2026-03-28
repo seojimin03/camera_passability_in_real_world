@@ -1,4 +1,4 @@
-# camera_passability_in_real_world
+# camera_Traversability_in_real_world
 시각-공간(Semantic-Geometric) 데이터 융합 기반 엣지 경량화 통과성(Traversability) 맵핑 알고리즘 + 비전 인증 기반 적재함 개방 
 
 
