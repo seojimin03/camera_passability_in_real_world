@@ -13,6 +13,7 @@ hand_recognizer 와 짝을 이루는 "몸 제스처" 인식기. 둘 다 MediaPip
 
 MediaPipe Pose landmark 인덱스 (BlazePose 33점, 주요만):
   0  nose
+  7  left_ear         8  right_ear
   11 left_shoulder    12 right_shoulder
   13 left_elbow       14 right_elbow
   15 left_wrist       16 right_wrist
@@ -44,10 +45,12 @@ DEPTH_PERCENTILE    = 20
 CONFIRM_FRAMES      = 5
 
 # 인증으로 인정할 몸 제스처
-VALID_GESTURES: set = {'both_hands_up'}
+VALID_GESTURES: set = {'hands_on_head'}
 
 # landmark 인덱스
 NOSE        = 0
+L_EAR       = 7
+R_EAR       = 8
 L_SHOULDER  = 11
 R_SHOULDER  = 12
 L_WRIST     = 15
@@ -76,16 +79,26 @@ def classify_pose_gesture(lm: np.ndarray) -> Tuple[str, float]:
     """
     lm: (33, 3) 정규화 landmark 배열 (x, y, z), y는 위로 갈수록 작음.
     반환: (gesture, confidence[0..1]). 미분류는 ('', 0.0).
-    """
-    nose_y  = lm[NOSE, 1]
-    lw_up   = lm[L_WRIST, 1] < nose_y   # 왼손목이 코보다 위
-    rw_up   = lm[R_WRIST, 1] < nose_y   # 오른손목이 코보다 위
 
-    if lw_up and rw_up:
-        # 코 대비 손목이 얼마나 위인지로 간이 confidence
-        margin = float((nose_y - lm[L_WRIST, 1]) + (nose_y - lm[R_WRIST, 1])) / 2.0
-        conf   = float(min(1.0, max(0.0, margin * 3.0)))
-        return 'both_hands_up', max(conf, 0.6)
+    hands_on_head(머리에 손): 양 손목이
+      (1) 귀보다 위(y 작음)로 올라가 있고,
+      (2) 수평(x)으로 머리 중심(코) 근처에 있어야 함.
+    → 손을 높이·바깥으로 벌리는 '만세'와 구분됨.
+    """
+    nose_x = lm[NOSE, 0]
+    ear_y  = float(lm[L_EAR, 1] + lm[R_EAR, 1]) / 2.0
+    head_w = abs(float(lm[R_EAR, 0] - lm[L_EAR, 0]))
+    if head_w < 1e-6:
+        head_w = 0.08                     # 정규화 좌표 기준 머리 폭 근사치
+    x_tol = head_w * 1.5                   # 머리 중심에서 허용하는 좌우 편차
+
+    lw_up   = lm[L_WRIST, 1] < ear_y
+    rw_up   = lm[R_WRIST, 1] < ear_y
+    lw_near = abs(lm[L_WRIST, 0] - nose_x) < x_tol
+    rw_near = abs(lm[R_WRIST, 0] - nose_x) < x_tol
+
+    if lw_up and rw_up and lw_near and rw_near:
+        return 'hands_on_head', 0.85
 
     return '', 0.0
 

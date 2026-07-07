@@ -7,10 +7,10 @@ MediaPipe Hands 기반 손 제스처/수화 인식 모듈 (QR 실패 시 fallbac
   - MediaPipe(`mediapipe`)는 지연 import → 미설치 환경에서도 모듈 import 가능.
   - 21개 hand landmark → 제스처 분류는 **순수 함수**(classify_hand_gesture)로 분리.
     카메라/MediaPipe 없이 합성 landmark 로 단위테스트 가능.
-  - GestureRecognizer 와 동일한 인터페이스:
+  - pose_recognizer 와 동일한 인터페이스:
         recognize(color_img, depth_img, camera_info) -> HandResult
         reset()
-    → vision_auth_node 에 드롭인 교체/추가 가능.
+    → vision_auth_node 에서 pose 와 병렬(OR) 사용.
 
 MediaPipe landmark 인덱스 (21점):
   0 wrist

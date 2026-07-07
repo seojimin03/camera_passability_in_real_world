@@ -13,4 +13,3 @@
 - `models/wechat_qr/` : WeChat QR 4종 파일 필요
     - detect.prototxt / detect.caffemodel
     - sr.prototxt / sr.caffemodel
-- `weights/yolov8n-pose.pt` : (구) 몸 제스처 인증용 — 손가락 수화는 hand_landmarker 사용
