@@ -25,13 +25,14 @@ from sensor_msgs.msg import CameraInfo
 
 from campus_delivery_auth.camera_sync import CameraSync
 from campus_delivery_auth.qr_scanner import QRScanner
-from campus_delivery_auth.gesture_recognizer import GestureRecognizer
+from campus_delivery_auth.hand_recognizer import HandRecognizer
+from campus_delivery_auth.pose_recognizer import PoseRecognizer
 
 
 # ── 파라미터 상수 ──────────────────────────────────────────────────────── #
 
 QR_TIMEOUT_SEC       = 15.0
-GESTURE_MAX_FAIL     = 3
+GESTURE_TIMEOUT_SEC  = 45.0   # GESTURE_AUTH 단계 제한시간 (손·몸 인증 시도 총 허용)
 AUTH_FAILED_WAIT_SEC = 30.0
 UNLOCK_PUB_COUNT     = 3
 UNLOCK_PUB_INTERVAL  = 1.0
@@ -64,7 +65,9 @@ class VisionAuthNode:
         # ── 서브모듈 ──────────────────────────────────────────────────── #
         self._camera_sync = CameraSync()
         self._qr_scanner  = QRScanner()
-        self._gesture_rec = GestureRecognizer()
+        # 2차 인증: 손·몸 제스처를 MediaPipe 로 병렬(OR) 인식
+        self._hand_rec = HandRecognizer()
+        self._pose_rec = PoseRecognizer()
 
         self._camera_sync.register_callback(self._on_camera_frame)
 
@@ -136,15 +139,26 @@ class VisionAuthNode:
             rospy.logdebug(f'QR scan: {result.reason}')
 
     def _handle_gesture(self, color_img, depth_img, info_msg) -> None:
-        result = self._gesture_rec.recognize(color_img, depth_img, info_msg)
-        if result.detected:
+        # OR 규칙: 손 또는 몸 제스처 중 하나라도 확정되면 인증 성공
+        hand = self._hand_rec.recognize(color_img, depth_img, info_msg)
+        if hand.detected:
             rospy.loginfo(
-                f'Gesture auth success: {result.gesture} '
-                f'(conf={result.confidence:.2f}, depth={result.depth_m:.2f}m)'
+                f'Hand auth success: {hand.gesture} '
+                f'(conf={hand.confidence:.2f}, depth={hand.depth_m:.2f}m)'
             )
             self._transition(AuthState.AUTHENTICATED)
-        else:
-            rospy.logdebug(f'Gesture: {result.reason}')
+            return
+
+        pose = self._pose_rec.recognize(color_img, depth_img, info_msg)
+        if pose.detected:
+            rospy.loginfo(
+                f'Pose auth success: {pose.gesture} '
+                f'(conf={pose.confidence:.2f}, depth={pose.depth_m:.2f}m)'
+            )
+            self._transition(AuthState.AUTHENTICATED)
+            return
+
+        rospy.logdebug(f'Gesture: hand={hand.reason}, pose={pose.reason}')
 
     # ═══════════════════════════════════════════════════════════════════ #
     #  메인 루프 타이머
@@ -161,8 +175,8 @@ class VisionAuthNode:
                 self._transition(AuthState.GESTURE_AUTH)
 
         elif self._state == AuthState.GESTURE_AUTH:
-            if elapsed >= QR_TIMEOUT_SEC * GESTURE_MAX_FAIL:
-                rospy.logwarn('Gesture timeout → AUTH_FAILED')
+            if elapsed >= GESTURE_TIMEOUT_SEC:
+                rospy.logwarn(f'Gesture timeout ({GESTURE_TIMEOUT_SEC}s) → AUTH_FAILED')
                 self._transition(AuthState.AUTH_FAILED)
 
         elif self._state == AuthState.AUTHENTICATED:
@@ -195,7 +209,8 @@ class VisionAuthNode:
         if old_state in (AuthState.QR_SCANNING, AuthState.GESTURE_AUTH,
                          AuthState.AUTHENTICATED):
             self._camera_sync.off()
-            self._gesture_rec.reset()
+            self._hand_rec.reset()
+            self._pose_rec.reset()
 
         self._state         = new_state
         self._state_enter_t = time.monotonic()
@@ -208,7 +223,8 @@ class VisionAuthNode:
             self._camera_sync.on()
 
         elif new_state == AuthState.GESTURE_AUTH:
-            self._gesture_rec.reset()
+            self._hand_rec.reset()
+            self._pose_rec.reset()
             self._camera_sync.on()
 
         elif new_state == AuthState.AUTHENTICATED:
