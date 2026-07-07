@@ -1,24 +1,23 @@
 """
-hand_recognizer.py  (ROS1)
+pose_recognizer.py  (ROS1)
 ==========================
-MediaPipe Hands 기반 손 제스처/수화 인식 모듈 (QR 실패 시 fallback 인증).
+MediaPipe Pose Landmarker 기반 몸 제스처 인증 모듈.
 
-설계:
-  - MediaPipe(`mediapipe`)는 지연 import → 미설치 환경에서도 모듈 import 가능.
-  - 21개 hand landmark → 제스처 분류는 **순수 함수**(classify_hand_gesture)로 분리.
-    카메라/MediaPipe 없이 합성 landmark 로 단위테스트 가능.
-  - pose_recognizer 와 동일한 인터페이스:
-        recognize(color_img, depth_img, camera_info) -> HandResult
-        reset()
-    → vision_auth_node 에서 pose 와 병렬(OR) 사용.
+hand_recognizer 와 짝을 이루는 "몸 제스처" 인식기. 둘 다 MediaPipe Tasks API 로
+통일하여 vision_auth FSM 의 2차 인증에서 병렬 사용한다.
 
-MediaPipe landmark 인덱스 (21점):
-  0 wrist
-  1-4   thumb  (CMC, MCP, IP, TIP)
-  5-8   index  (MCP, PIP, DIP, TIP)
-  9-12  middle
-  13-16 ring
-  17-20 pinky
+설계(= hand_recognizer 와 동일 패턴):
+  - MediaPipe 지연 import → 미설치 환경에서도 모듈 import 가능
+  - 분류(classify_pose_gesture)는 순수 함수 → 카메라/MediaPipe 없이 단위테스트
+  - recognize()/reset() 인터페이스 동일 → FSM 드롭인
+
+MediaPipe Pose landmark 인덱스 (BlazePose 33점, 주요만):
+  0  nose
+  7  left_ear         8  right_ear
+  11 left_shoulder    12 right_shoulder
+  13 left_elbow       14 right_elbow
+  15 left_wrist       16 right_wrist
+  23 left_hip         24 right_hip
 """
 
 from __future__ import annotations
@@ -35,39 +34,40 @@ import rospy
 
 # ── 파라미터 상수 ──────────────────────────────────────────────────────── #
 
-HAND_DETECTION_CONF = 0.6
-HAND_TRACKING_CONF  = 0.5
-MAX_NUM_HANDS       = 1
+POSE_DETECTION_CONF = 0.6
+POSE_PRESENCE_CONF  = 0.6
+POSE_TRACKING_CONF  = 0.5
+NUM_POSES           = 1
 
 DEPTH_VALID_MAX_M   = 0.5
 DEPTH_VALID_MIN_M   = 0.1
 DEPTH_PERCENTILE    = 20
 CONFIRM_FRAMES      = 5
 
-# Tasks API 모델 파일 (campus_delivery_auth/models/hand_landmarker.task)
-_DEFAULT_TASK = os.path.join(
-    os.path.dirname(__file__), '..', '..', 'models', 'hand_landmarker.task'
-)
-
-# 인증으로 인정할 제스처 (테스트로 최적 동작 선정)
-VALID_GESTURES: set = {'open_palm'}
+# 인증으로 인정할 몸 제스처
+VALID_GESTURES: set = {'hands_on_head'}
 
 # landmark 인덱스
-WRIST = 0
-THUMB_IP, THUMB_TIP            = 3, 4
-INDEX_PIP, INDEX_TIP           = 6, 8
-MIDDLE_PIP, MIDDLE_TIP         = 10, 12
-RING_PIP, RING_TIP             = 14, 16
-PINKY_PIP, PINKY_TIP           = 18, 20
+NOSE        = 0
+L_EAR       = 7
+R_EAR       = 8
+L_SHOULDER  = 11
+R_SHOULDER  = 12
+L_WRIST     = 15
+R_WRIST     = 16
+
+_DEFAULT_TASK = os.path.join(
+    os.path.dirname(__file__), '..', '..', 'models', 'pose_landmarker.task'
+)
 
 
 @dataclass
-class HandResult:
+class PoseResult:
     detected:   bool
     gesture:    str   = ''
     confidence: float = 0.0
     depth_m:    float = 0.0
-    num_hands:  int   = 0
+    num_poses:  int   = 0
     reason:     str   = ''
 
 
@@ -75,49 +75,31 @@ class HandResult:
 #  순수 함수: landmark → 제스처  (ROS/MediaPipe 비의존, 단위테스트 대상)
 # ═══════════════════════════════════════════════════════════════════════ #
 
-def finger_states(lm: np.ndarray, handedness: str) -> dict:
+def classify_pose_gesture(lm: np.ndarray) -> Tuple[str, float]:
     """
-    lm: (21, 3) 정규화 landmark 배열 (x, y, z), y는 위로 갈수록 작음.
-    handedness: 'Right' | 'Left' (MediaPipe 라벨, 카메라 시점 기준).
-    반환: {thumb, index, middle, ring, pinky: bool}  (펴짐=True)
+    lm: (33, 3) 정규화 landmark 배열 (x, y, z), y는 위로 갈수록 작음.
+    반환: (gesture, confidence[0..1]). 미분류는 ('', 0.0).
+
+    hands_on_head(머리에 손): 양 손목이
+      (1) 귀보다 위(y 작음)로 올라가 있고,
+      (2) 수평(x)으로 머리 중심(코) 근처에 있어야 함.
+    → 손을 높이·바깥으로 벌리는 '만세'와 구분됨.
     """
-    def ext_vert(tip_i, pip_i) -> bool:
-        # 손가락이 위를 향한다는 가정: tip 이 pip 보다 위(=y 작음)면 펴진 것
-        return bool(lm[tip_i, 1] < lm[pip_i, 1])
+    nose_x = lm[NOSE, 0]
+    ear_y  = float(lm[L_EAR, 1] + lm[R_EAR, 1]) / 2.0
+    head_w = abs(float(lm[R_EAR, 0] - lm[L_EAR, 0]))
+    if head_w < 1e-6:
+        head_w = 0.08                     # 정규화 좌표 기준 머리 폭 근사치
+    x_tol = head_w * 1.5                   # 머리 중심에서 허용하는 좌우 편차
 
-    # 엄지는 좌우(x)로 펴짐 — handedness 에 따라 방향 반전
-    if handedness == 'Right':
-        thumb = bool(lm[THUMB_TIP, 0] < lm[THUMB_IP, 0])
-    else:
-        thumb = bool(lm[THUMB_TIP, 0] > lm[THUMB_IP, 0])
+    lw_up   = lm[L_WRIST, 1] < ear_y
+    rw_up   = lm[R_WRIST, 1] < ear_y
+    lw_near = abs(lm[L_WRIST, 0] - nose_x) < x_tol
+    rw_near = abs(lm[R_WRIST, 0] - nose_x) < x_tol
 
-    return {
-        'thumb':  thumb,
-        'index':  ext_vert(INDEX_TIP,  INDEX_PIP),
-        'middle': ext_vert(MIDDLE_TIP, MIDDLE_PIP),
-        'ring':   ext_vert(RING_TIP,   RING_PIP),
-        'pinky':  ext_vert(PINKY_TIP,  PINKY_PIP),
-    }
+    if lw_up and rw_up and lw_near and rw_near:
+        return 'hands_on_head', 0.85
 
-
-def classify_hand_gesture(
-    lm: np.ndarray, handedness: str = 'Right'
-) -> Tuple[str, float]:
-    """21점 landmark → (gesture, confidence[0..1]). 미분류는 ('', 0.0)."""
-    st  = finger_states(lm, handedness)
-    ext = {f for f, v in st.items() if v}
-    n   = len(ext)
-
-    if n == 5:
-        return 'open_palm', 0.9
-    if n == 0:
-        return 'fist', 0.9
-    if ext == {'index', 'middle'}:
-        return 'victory', 0.8
-    if ext == {'index'}:
-        return 'point', 0.7
-    if ext == {'thumb'}:
-        return 'thumbs_up', 0.7
     return '', 0.0
 
 
@@ -146,16 +128,16 @@ class _FrameBuffer:
 #  MediaPipe 래퍼
 # ═══════════════════════════════════════════════════════════════════════ #
 
-class HandRecognizer:
+class PoseRecognizer:
 
     def __init__(self) -> None:
-        self._hands  = self._init_mediapipe()
+        self._pose   = self._init_mediapipe()
         self._buffer = _FrameBuffer(maxlen=CONFIRM_FRAMES)
-        rospy.loginfo('HandRecognizer: MediaPipe Hands ready')
+        rospy.loginfo('PoseRecognizer: MediaPipe Pose ready')
 
     @staticmethod
     def _init_mediapipe():
-        """MediaPipe Tasks API(HandLandmarker, IMAGE 모드) 초기화."""
+        """MediaPipe Tasks API(PoseLandmarker, IMAGE 모드) 초기화."""
         try:
             from mediapipe.tasks import python as mpp
             from mediapipe.tasks.python import vision
@@ -164,48 +146,47 @@ class HandRecognizer:
                 'mediapipe 미설치 — `pip install mediapipe` 후 사용하세요'
             ) from e
 
-        task_path = os.environ.get('HAND_LANDMARKER_TASK', _DEFAULT_TASK)
+        task_path = os.environ.get('POSE_LANDMARKER_TASK', _DEFAULT_TASK)
         if not os.path.exists(task_path):
             raise RuntimeError(
-                f'hand_landmarker.task 없음: {task_path}\n'
+                f'pose_landmarker.task 없음: {task_path}\n'
                 '  → models/README.md 의 URL 에서 받아 두세요'
             )
 
-        options = vision.HandLandmarkerOptions(
+        options = vision.PoseLandmarkerOptions(
             base_options=mpp.BaseOptions(model_asset_path=task_path),
-            num_hands=MAX_NUM_HANDS,
-            min_hand_detection_confidence=HAND_DETECTION_CONF,
-            min_hand_presence_confidence=HAND_DETECTION_CONF,
-            min_tracking_confidence=HAND_TRACKING_CONF,
+            num_poses=NUM_POSES,
+            min_pose_detection_confidence=POSE_DETECTION_CONF,
+            min_pose_presence_confidence=POSE_PRESENCE_CONF,
+            min_tracking_confidence=POSE_TRACKING_CONF,
             running_mode=vision.RunningMode.IMAGE,
         )
-        return vision.HandLandmarker.create_from_options(options)
+        return vision.PoseLandmarker.create_from_options(options)
 
     def recognize(
         self,
         color_img:   np.ndarray,
         depth_img:   np.ndarray,
         camera_info: CameraInfo,
-    ) -> HandResult:
-        import cv2  # 지연 import (ROS 환경 가정)
+    ) -> PoseResult:
+        import cv2  # 지연 import
         import mediapipe as mp
 
         rgb = cv2.cvtColor(color_img, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        res = self._hands.detect(mp_image)
+        res = self._pose.detect(mp_image)
 
-        if not res.hand_landmarks:
+        if not res.pose_landmarks:
             self._buffer.push('')
-            return HandResult(detected=False, reason='no_hand')
+            return PoseResult(detected=False, reason='no_pose')
 
         h, w = color_img.shape[:2]
         best = None  # (gesture, conf, depth_m)
 
-        for lms, handed in zip(res.hand_landmarks, res.handedness):
-            lm    = np.array([[p.x, p.y, p.z] for p in lms])
-            label = handed[0].category_name  # 'Right'/'Left'
+        for lms in res.pose_landmarks:
+            lm = np.array([[p.x, p.y, p.z] for p in lms])
 
-            gesture, conf = classify_hand_gesture(lm, label)
+            gesture, conf = classify_pose_gesture(lm)
             if gesture not in VALID_GESTURES:
                 continue
 
@@ -218,8 +199,8 @@ class HandRecognizer:
 
         if best is None:
             self._buffer.push('')
-            return HandResult(
-                detected=False, num_hands=len(res.hand_landmarks),
+            return PoseResult(
+                detected=False, num_poses=len(res.pose_landmarks),
                 reason='no_valid_gesture',
             )
 
@@ -227,29 +208,33 @@ class HandRecognizer:
         self._buffer.push(gesture)
 
         if self._buffer.is_confirmed(gesture):
-            return HandResult(
+            return PoseResult(
                 detected=True, gesture=gesture, confidence=conf,
-                depth_m=depth_m, num_hands=len(res.hand_landmarks),
+                depth_m=depth_m, num_poses=len(res.pose_landmarks),
             )
 
         done = len(self._buffer.buf)
-        return HandResult(
+        return PoseResult(
             detected=False, gesture=gesture, confidence=conf, depth_m=depth_m,
-            num_hands=len(res.hand_landmarks),
+            num_poses=len(res.pose_landmarks),
             reason=f'confirming:{done}/{CONFIRM_FRAMES}',
         )
 
     def reset(self) -> None:
         self._buffer.reset()
 
-    # ── depth: landmark bbox 영역 percentile ──────────────────────────── #
+    # ── depth: 상반신 landmark(어깨~손목) bbox percentile ──────────────── #
 
     @staticmethod
     def _measure_depth(depth_img, lm, w, h) -> Optional[float]:
-        xs = (lm[:, 0] * w).astype(int)
-        ys = (lm[:, 1] * h).astype(int)
+        # 몸 전체 대신 상반신 핵심점만 사용 (배경 depth 혼입 최소화)
+        idx = [NOSE, L_SHOULDER, R_SHOULDER, L_WRIST, R_WRIST]
+        xs  = (lm[idx, 0] * w).astype(int)
+        ys  = (lm[idx, 1] * h).astype(int)
         x1, x2 = max(0, xs.min()), min(w, xs.max())
         y1, y2 = max(0, ys.min()), min(h, ys.max())
+        if x2 <= x1 or y2 <= y1:
+            return None
         roi   = depth_img[y1:y2, x1:x2]
         valid = roi[roi > 0]
         if valid.size == 0:
